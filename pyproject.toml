@@ -11,6 +11,9 @@ dependencies = [
     "typer>=0.24.1",
 ]
 
+[project.scripts]
+agent_dispatch = "agent_dispatch.cli:main"
+
 [dependency-groups]
 dev = [
     "hypothesis>=6.151.9",
