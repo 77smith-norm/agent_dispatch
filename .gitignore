@@ -1,6 +1,9 @@
 # Python-generated files
 __pycache__/
 *.py[oc]
+.hypothesis/
+.pytest_cache/
+.ruff_cache/
 build/
 dist/
 wheels/
