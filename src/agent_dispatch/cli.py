@@ -20,6 +20,14 @@ class OutputFormat(StrEnum):
     JSON = "json"
 
 
+OutputOption = Annotated[
+    OutputFormat,
+    typer.Option("--output", case_sensitive=False),
+]
+JsonInputOption = Annotated[str, typer.Option("--json")]
+DbPathOption = Annotated[Path | None, typer.Option("--db-path")]
+
+
 def _default_db_path() -> Path:
     config_home = (
         Path(os.environ["XDG_CONFIG_HOME"])
@@ -54,23 +62,15 @@ def _emit_error(
 
 
 @app.command()
-def schema(
-    output: Annotated[
-        OutputFormat,
-        typer.Option("--output", case_sensitive=False),
-    ] = OutputFormat.JSON,
-) -> None:
+def schema(output: OutputOption = OutputFormat.JSON) -> None:
     _render_json(DispatchRequest.model_json_schema(), output=output)
 
 
 @app.command()
 def send(
-    json_input: Annotated[str, typer.Option("--json")],
-    db_path: Annotated[Path | None, typer.Option("--db-path")] = None,
-    output: Annotated[
-        OutputFormat,
-        typer.Option("--output", case_sensitive=False),
-    ] = OutputFormat.JSON,
+    json_input: JsonInputOption,
+    db_path: DbPathOption = None,
+    output: OutputOption = OutputFormat.JSON,
 ) -> None:
     try:
         request = DispatchRequest.model_validate_json(json_input)
