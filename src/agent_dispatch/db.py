@@ -31,7 +31,7 @@ class DispatchDB:
 
     def validate_walkie_talkie(self, agent_id: str) -> None:
         if not self.can_dispatch(agent_id):
-            raise WalkieTalkieViolation(f"agent {agent_id!r} already has a pending dispatch")
+            raise self._walkie_talkie_error(agent_id)
 
     def record_pending(self, request: DispatchRequest) -> DispatchRecord:
         created_at = _utcnow().isoformat()
@@ -40,9 +40,7 @@ class DispatchDB:
 
         def operation(connection: sqlite3.Connection) -> int:
             if self._has_pending(connection, request.agent_id):
-                raise WalkieTalkieViolation(
-                    f"agent {request.agent_id!r} already has a pending dispatch"
-                )
+                raise self._walkie_talkie_error(request.agent_id)
 
             try:
                 cursor = connection.execute(
@@ -72,9 +70,7 @@ class DispatchDB:
                 )
             except sqlite3.IntegrityError as exc:
                 if "one_pending_per_agent" in str(exc):
-                    raise WalkieTalkieViolation(
-                        f"agent {request.agent_id!r} already has a pending dispatch"
-                    ) from exc
+                    raise self._walkie_talkie_error(request.agent_id) from exc
 
                 raise
 
@@ -291,6 +287,11 @@ class DispatchDB:
             completed_at=_parse_optional_datetime(row["completed_at"]),
             response=response,
             error_message=row["error_message"],
+        )
+
+    def _walkie_talkie_error(self, agent_id: str) -> WalkieTalkieViolation:
+        return WalkieTalkieViolation(
+            f"agent {agent_id!r} already has a pending dispatch"
         )
 
 
