@@ -76,6 +76,7 @@ async def dispatch_request(
     *,
     client: httpx.AsyncClient | None = None,
     poll_interval: float = 0.01,
+    timeout: float = 120.0,
     wait_timeout: float | None = None,
 ) -> DispatchRecord:
     dispatch = await record_pending_when_ready(
@@ -86,7 +87,7 @@ async def dispatch_request(
     )
     payload = build_request_payload(request)
     owns_client = client is None
-    http_client = client or httpx.AsyncClient()
+    http_client = client or httpx.AsyncClient(timeout=timeout)
 
     try:
         try:
@@ -152,6 +153,7 @@ def dispatch_request_sync(
     request: DispatchRequest,
     *,
     poll_interval: float = 0.01,
+    timeout: float = 120.0,
     wait_timeout: float | None = None,
 ) -> DispatchRecord:
     return asyncio.run(
@@ -159,6 +161,7 @@ def dispatch_request_sync(
             database,
             request,
             poll_interval=poll_interval,
+            timeout=timeout,
             wait_timeout=wait_timeout,
         )
     )

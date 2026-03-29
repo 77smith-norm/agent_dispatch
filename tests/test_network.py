@@ -130,6 +130,40 @@ def test_dispatch_request_marks_replied_on_success() -> None:
         assert stored[0].state is DispatchState.REPLIED
 
 
+def test_dispatch_request_uses_configured_http_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    captured: dict[str, float | bool] = {}
+
+    class FakeAsyncClient:
+        def __init__(self, *, timeout: float) -> None:
+            captured["timeout"] = timeout
+
+        async def post(self, url: str, json: dict[str, Any]) -> httpx.Response:
+            request = httpx.Request("POST", url, json=json)
+            return httpx.Response(
+                200,
+                json={"id": "response-1", "status": "ok"},
+                request=request,
+            )
+
+        async def aclose(self) -> None:
+            captured["closed"] = True
+
+    async def scenario(db: DispatchDB, request: DispatchRequest) -> None:
+        dispatch = await dispatch_request(db, request, poll_interval=0, timeout=42.5)
+        assert dispatch.state is DispatchState.REPLIED
+
+    with TemporaryDirectory() as tempdir:
+        monkeypatch.setattr("agent_dispatch.network.httpx.AsyncClient", FakeAsyncClient)
+        db = DispatchDB(Path(tempdir) / "state.db")
+        request = _request()
+
+        asyncio.run(scenario(db, request))
+
+        assert captured == {"timeout": 42.5, "closed": True}
+
+
 def test_dispatch_request_marks_failed_on_rate_limit() -> None:
     def handler(_: httpx.Request) -> httpx.Response:
         return httpx.Response(429, json={"error": {"message": "slow down"}})

@@ -41,6 +41,7 @@ OutputOption = Annotated[
 ]
 JsonInputOption = Annotated[str, typer.Option("--json")]
 DbPathOption = Annotated[Path | None, typer.Option("--db-path")]
+TimeoutOption = Annotated[float, typer.Option("--timeout", min=0.0)]
 
 
 def _default_db_path() -> Path:
@@ -96,6 +97,7 @@ def schema(output: OutputOption = OutputFormat.JSON) -> None:
 def send(
     json_input: JsonInputOption,
     db_path: DbPathOption = None,
+    timeout: TimeoutOption = 120.0,
     output: OutputOption = OutputFormat.JSON,
 ) -> None:
     try:
@@ -112,7 +114,7 @@ def send(
     database = DispatchDB(db_path or _default_db_path())
 
     try:
-        dispatch = dispatch_request_sync(database, request)
+        dispatch = dispatch_request_sync(database, request, timeout=timeout)
     except DispatchRateLimitError as exc:
         _emit_error(
             output=output,

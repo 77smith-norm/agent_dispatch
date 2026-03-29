@@ -129,8 +129,12 @@ def test_send_dispatches_request_and_outputs_terminal_record(
     request = _request_payload()
 
     def fake_dispatch(
-        database: DispatchDB, dispatch_request: DispatchRequest
+        database: DispatchDB,
+        dispatch_request: DispatchRequest,
+        *,
+        timeout: float = 120.0,
     ) -> DispatchRecord:
+        assert timeout == 120.0
         dispatch = database.record_pending(dispatch_request)
         return database.mark_replied(dispatch.id, {"id": "response-1"})
 
@@ -164,8 +168,12 @@ def test_send_returns_rate_limit_exit_code(
     request = _request_payload()
 
     def fake_dispatch(
-        database: DispatchDB, dispatch_request: DispatchRequest
+        database: DispatchDB,
+        dispatch_request: DispatchRequest,
+        *,
+        timeout: float = 120.0,
     ) -> DispatchRecord:
+        assert timeout == 120.0
         dispatch = database.record_pending(dispatch_request)
         database.mark_failed(dispatch.id, "endpoint returned 429: slow down")
         raise DispatchRateLimitError(
@@ -198,8 +206,12 @@ def test_send_returns_general_error_exit_code_for_network_failures(
     request = _request_payload()
 
     def fake_dispatch(
-        database: DispatchDB, dispatch_request: DispatchRequest
+        database: DispatchDB,
+        dispatch_request: DispatchRequest,
+        *,
+        timeout: float = 120.0,
     ) -> DispatchRecord:
+        assert timeout == 120.0
         dispatch = database.record_pending(dispatch_request)
         database.mark_failed(dispatch.id, "connection error: refused")
         raise DispatchNetworkError(
@@ -222,3 +234,32 @@ def test_send_returns_general_error_exit_code_for_network_failures(
 
     assert len(records) == 1
     assert records[0].state is DispatchState.FAILED
+
+
+def test_send_passes_timeout_option_to_dispatch_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.db"
+    request = _request_payload()
+    observed: dict[str, float] = {}
+
+    def fake_dispatch(
+        database: DispatchDB,
+        dispatch_request: DispatchRequest,
+        *,
+        timeout: float = 120.0,
+    ) -> DispatchRecord:
+        observed["timeout"] = timeout
+        dispatch = database.record_pending(dispatch_request)
+        return database.mark_replied(dispatch.id, {"id": "response-1"})
+
+    monkeypatch.setattr("agent_dispatch.cli.dispatch_request_sync", fake_dispatch)
+
+    result = runner.invoke(
+        app,
+        _send_command(db_path, request) + ["--timeout", "42.5"],
+    )
+
+    assert result.exit_code == 0
+    assert observed["timeout"] == 42.5
