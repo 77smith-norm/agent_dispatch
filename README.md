@@ -13,11 +13,11 @@ previous one has reached a terminal state.
 ## Installation
 
 ```bash
-pip install agent-dispatch
+pip install agent_dispatch
 ```
 
 ```bash
-uv add agent-dispatch
+uv add agent_dispatch
 ```
 
 ## What It Does
