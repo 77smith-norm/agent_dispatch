@@ -205,6 +205,52 @@ def test_dispatch_request_marks_failed_on_transport_error() -> None:
         assert stored[0].error_message == "connection error: connection refused"
 
 
+def test_dispatch_request_marks_failed_on_timeout() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise httpx.ReadTimeout("timed out", request=request)
+
+    async def scenario(db: DispatchDB, request: DispatchRequest) -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(DispatchNetworkError) as exc_info:
+                await dispatch_request(db, request, client=client, poll_interval=0)
+
+        assert "timed out" in str(exc_info.value)
+
+    with TemporaryDirectory() as tempdir:
+        db = DispatchDB(Path(tempdir) / "state.db")
+        request = _request()
+
+        asyncio.run(scenario(db, request))
+
+        stored = db.list_dispatches(agent_id=request.agent_id)
+        assert len(stored) == 1
+        assert stored[0].state is DispatchState.FAILED
+        assert stored[0].error_message == "connection error: timed out"
+
+
+def test_dispatch_request_marks_failed_on_server_error() -> None:
+    def handler(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(500, text="server exploded")
+
+    async def scenario(db: DispatchDB, request: DispatchRequest) -> None:
+        async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
+            with pytest.raises(DispatchNetworkError) as exc_info:
+                await dispatch_request(db, request, client=client, poll_interval=0)
+
+        assert exc_info.value.status_code == 500
+
+    with TemporaryDirectory() as tempdir:
+        db = DispatchDB(Path(tempdir) / "state.db")
+        request = _request()
+
+        asyncio.run(scenario(db, request))
+
+        stored = db.list_dispatches(agent_id=request.agent_id)
+        assert len(stored) == 1
+        assert stored[0].state is DispatchState.FAILED
+        assert stored[0].error_message == "endpoint returned 500: server exploded"
+
+
 def test_record_pending_when_ready_times_out_without_terminal_transition() -> None:
     async def scenario(db: DispatchDB, request: DispatchRequest) -> None:
         with pytest.raises(DispatchTimeoutError):

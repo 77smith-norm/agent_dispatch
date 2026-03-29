@@ -2,9 +2,9 @@ from __future__ import annotations
 
 from datetime import datetime
 from enum import StrEnum
-from typing import Any
+from typing import Annotated, Any
 
-from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field
+from pydantic import AnyHttpUrl, BaseModel, ConfigDict, Field, StringConstraints
 
 
 class DispatchState(StrEnum):
@@ -18,6 +18,12 @@ class MessageRole(StrEnum):
     USER = "user"
     ASSISTANT = "assistant"
     TOOL = "tool"
+
+
+NonBlankString = Annotated[
+    str,
+    StringConstraints(strip_whitespace=True, min_length=1),
+]
 
 
 class Message(BaseModel):
@@ -38,7 +44,7 @@ class Thread(BaseModel):
 class DispatchRequest(BaseModel):
     model_config = ConfigDict(extra="forbid", frozen=True)
 
-    agent_id: str = Field(min_length=1)
+    agent_id: NonBlankString
     endpoint: AnyHttpUrl
     thread: Thread
     model: str | None = None

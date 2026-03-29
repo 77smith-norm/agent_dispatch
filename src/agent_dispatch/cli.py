@@ -29,7 +29,6 @@ class ExitCode(IntEnum):
     ERROR = 1
     RATE_LIMIT = 2
     AUTH = 3
-    NETWORK = 4
 
 
 class OutputFormat(StrEnum):
@@ -135,7 +134,7 @@ def send(
             output=output,
             code=exc.error_code,
             message=str(exc),
-            exit_code=ExitCode.NETWORK,
+            exit_code=ExitCode.ERROR,
             details=_dispatch_error_details(exc),
         )
     except DispatchTimeoutError as exc:

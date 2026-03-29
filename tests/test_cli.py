@@ -63,9 +63,7 @@ def test_schema_outputs_dispatch_request_schema_by_default() -> None:
     assert result.exit_code == 0
     payload = cast(dict[str, Any], json.loads(result.stdout))
 
-    assert payload["title"] == "DispatchRequest"
-    assert {"agent_id", "endpoint", "thread"}.issubset(payload["properties"])
-    assert {"agent_id", "endpoint", "thread"}.issubset(payload["required"])
+    assert payload == cast(dict[str, Any], DispatchRequest.model_json_schema())
 
 
 def test_schema_accepts_output_json_flag() -> None:
@@ -96,6 +94,30 @@ def test_send_rejects_invalid_dispatch_request_before_touching_db(
     payload = cast(dict[str, Any], json.loads(result.stdout))
 
     assert payload["error"]["code"] == "validation_error"
+    assert not db_path.exists()
+
+
+def test_send_rejects_malformed_json_input_with_json_error(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+
+    result = runner.invoke(
+        app,
+        [
+            "send",
+            "--json",
+            "{not-json",
+            "--db-path",
+            str(db_path),
+            "--output",
+            "json",
+        ],
+    )
+
+    assert result.exit_code == int(ExitCode.ERROR)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["error"]["code"] == "validation_error"
+    assert payload["error"]["details"][0]["type"] == "json_invalid"
     assert not db_path.exists()
 
 
@@ -168,7 +190,7 @@ def test_send_returns_rate_limit_exit_code(
     assert records[0].state is DispatchState.FAILED
 
 
-def test_send_returns_network_exit_code(
+def test_send_returns_general_error_exit_code_for_network_failures(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -189,7 +211,7 @@ def test_send_returns_network_exit_code(
 
     result = runner.invoke(app, _send_command(db_path, request))
 
-    assert result.exit_code == int(ExitCode.NETWORK)
+    assert result.exit_code == int(ExitCode.ERROR)
     payload = cast(dict[str, Any], json.loads(result.stdout))
 
     assert payload["error"]["code"] == "network_error"

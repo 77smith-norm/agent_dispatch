@@ -188,16 +188,16 @@ Example error output:
 - `agent_dispatch` stores SQLite state at `${XDG_CONFIG_HOME:-~/.config}/agent_dispatch/state.db`.
 - Set `XDG_CONFIG_HOME` if you want the database under a different config root.
 - Use `--db-path` in tests or local experiments when you want an isolated database file.
+- `agent_id` is trimmed before validation and must contain at least one non-whitespace character.
 
 ## Exit Codes
 
 | Code | Meaning |
 | --- | --- |
 | `0` | Success |
-| `1` | Validation error, dispatch timeout, transport timeout, DNS/connect failure, or other general error |
+| `1` | Validation error, dispatch timeout, transport timeout, DNS/connect failure, 5xx response, or other general error |
 | `2` | Upstream rate limited the request (`429`) |
 | `3` | Upstream authentication/authorization failure (`401` or `403`) |
-| `4` | Other network or HTTP dispatch failure |
 
 ## Development
 
