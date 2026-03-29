@@ -7,8 +7,8 @@ An agent-first Python CLI application for dispatching request/response messages 
 - Run tests: `uv run pytest`
 - Property-based tests: `uv run pytest tests/test_properties.py`
 - Lint & format: `uv run ruff check . --fix && uv run ruff format .`
-- Type check: `uv run ty`
-- Full quality gate (must pass before commit): `uv run ruff check . && uv run ty && uv run pytest`
+- Type check: `uv run ty check`
+- Full quality gate (must pass before commit): `uv run ruff check . && uv run ty check && uv run pytest`
 
 ## Project Structure
 - `src/agent_dispatch/` — application source

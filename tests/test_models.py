@@ -28,8 +28,14 @@ def _payload(
 @pytest.mark.parametrize(
     ("endpoint", "expected"),
     [
-        ("http://example.com/v1/chat/completions", "http://example.com/v1/chat/completions"),
-        ("http://example.com/v1/chat/completions/", "http://example.com/v1/chat/completions/"),
+        (
+            "http://example.com/v1/chat/completions",
+            "http://example.com/v1/chat/completions",
+        ),
+        (
+            "http://example.com/v1/chat/completions/",
+            "http://example.com/v1/chat/completions/",
+        ),
     ],
 )
 def test_dispatch_request_accepts_endpoint_with_or_without_trailing_slash(

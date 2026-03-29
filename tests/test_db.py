@@ -5,7 +5,7 @@ from pathlib import Path
 import pytest
 
 from agent_dispatch.db import DispatchDB, InvalidStateTransition, WalkieTalkieViolation
-from agent_dispatch.models import DispatchRequest, DispatchState, Message, Thread
+from agent_dispatch.models import DispatchRequest, DispatchState
 
 
 def _request(agent_id: str = "agent-1") -> DispatchRequest:
@@ -22,7 +22,9 @@ def _request(agent_id: str = "agent-1") -> DispatchRequest:
     )
 
 
-def test_get_dispatch_raises_key_error_with_dispatch_id_in_message(tmp_path: Path) -> None:
+def test_get_dispatch_raises_key_error_with_dispatch_id_in_message(
+    tmp_path: Path,
+) -> None:
     db = DispatchDB(tmp_path / "state.db")
 
     with pytest.raises(KeyError) as exc_info:
@@ -53,7 +55,9 @@ def test_mark_replied_is_not_idempotent(tmp_path: Path) -> None:
     with pytest.raises(InvalidStateTransition) as exc_info:
         db.mark_replied(dispatch.id, {"id": "response-2"})
 
-    assert str(exc_info.value) == f"dispatch {dispatch.id} cannot transition from REPLIED"
+    assert (
+        str(exc_info.value) == f"dispatch {dispatch.id} cannot transition from REPLIED"
+    )
 
 
 def test_mark_failed_is_not_idempotent(tmp_path: Path) -> None:
@@ -66,4 +70,6 @@ def test_mark_failed_is_not_idempotent(tmp_path: Path) -> None:
     with pytest.raises(InvalidStateTransition) as exc_info:
         db.mark_failed(dispatch.id, "still boom")
 
-    assert str(exc_info.value) == f"dispatch {dispatch.id} cannot transition from FAILED"
+    assert (
+        str(exc_info.value) == f"dispatch {dispatch.id} cannot transition from FAILED"
+    )
