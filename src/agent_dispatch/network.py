@@ -92,6 +92,13 @@ async def dispatch_request(
     try:
         try:
             response = await http_client.post(str(request.endpoint), json=payload)
+        except httpx.TimeoutException as exc:
+            message = f"request timed out after {timeout}s"
+            await asyncio.to_thread(database.mark_failed, dispatch.id, message)
+            raise DispatchTimeoutError(
+                message,
+                dispatch_id=dispatch.id,
+            ) from exc
         except httpx.TransportError as exc:
             message = f"connection error: {exc}"
             await asyncio.to_thread(database.mark_failed, dispatch.id, message)

@@ -245,10 +245,16 @@ def test_dispatch_request_marks_failed_on_timeout() -> None:
 
     async def scenario(db: DispatchDB, request: DispatchRequest) -> None:
         async with httpx.AsyncClient(transport=httpx.MockTransport(handler)) as client:
-            with pytest.raises(DispatchNetworkError) as exc_info:
-                await dispatch_request(db, request, client=client, poll_interval=0)
+            with pytest.raises(DispatchTimeoutError) as exc_info:
+                await dispatch_request(
+                    db,
+                    request,
+                    client=client,
+                    poll_interval=0,
+                    timeout=42.5,
+                )
 
-        assert "timed out" in str(exc_info.value)
+        assert str(exc_info.value) == "request timed out after 42.5s"
 
     with TemporaryDirectory() as tempdir:
         db = DispatchDB(Path(tempdir) / "state.db")
@@ -259,7 +265,7 @@ def test_dispatch_request_marks_failed_on_timeout() -> None:
         stored = db.list_dispatches(agent_id=request.agent_id)
         assert len(stored) == 1
         assert stored[0].state is DispatchState.FAILED
-        assert stored[0].error_message == "connection error: timed out"
+        assert stored[0].error_message == "request timed out after 42.5s"
 
 
 def test_dispatch_request_marks_failed_on_server_error() -> None:
