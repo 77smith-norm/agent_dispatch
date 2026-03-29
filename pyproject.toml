@@ -1,15 +1,33 @@
 [project]
 name = "agent-dispatch"
 version = "0.1.0"
-description = "Add your description here"
+description = "A walkie-talkie dispatch protocol CLI for OpenAI-compatible agent endpoints"
 readme = "README.md"
 requires-python = ">=3.14"
+authors = [{ name = "Russell Dillin" }]
+license = { text = "MIT" }
+keywords = ["agent", "dispatch", "openai", "cli", "llm"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.14",
+    "Topic :: Scientific/Engineering :: Artificial Intelligence",
+    "Topic :: Software Development :: Libraries",
+]
 dependencies = [
     "httpx>=0.28.1",
     "pydantic>=2.12.5",
     "rich>=14.3.3",
     "typer>=0.24.1",
 ]
+
+[project.urls]
+Homepage = "https://github.com/77smith-norm/agent_dispatch"
+Repository = "https://github.com/77smith-norm/agent_dispatch"
 
 [project.scripts]
 agent_dispatch = "agent_dispatch.cli:main"
