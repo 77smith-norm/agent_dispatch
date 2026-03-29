@@ -2,6 +2,8 @@
 
 # agent_dispatch
 
+![Norm and Pierrot, walkie-talkies in hand](norm_pierrot_agent_dispatch.jpg)
+
 A walkie-talkie dispatch protocol CLI for OpenAI-compatible agent endpoints.
 
 `agent_dispatch` solves a coordination problem that shows up when multiple callers
