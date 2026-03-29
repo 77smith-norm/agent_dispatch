@@ -2,18 +2,34 @@ from __future__ import annotations
 
 import json
 import os
-from enum import StrEnum
+from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Annotated, Any
 
 import typer
 from pydantic import ValidationError
 
-from agent_dispatch.db import DispatchDB, WalkieTalkieViolation
+from agent_dispatch.db import DispatchDB
 from agent_dispatch.models import DispatchRequest
+from agent_dispatch.network import (
+    DispatchAuthenticationError,
+    DispatchError,
+    DispatchNetworkError,
+    DispatchRateLimitError,
+    DispatchTimeoutError,
+    dispatch_request_sync,
+)
 
 
 app = typer.Typer(add_completion=False)
+
+
+class ExitCode(IntEnum):
+    SUCCESS = 0
+    ERROR = 1
+    RATE_LIMIT = 2
+    AUTH = 3
+    NETWORK = 4
 
 
 class OutputFormat(StrEnum):
@@ -49,6 +65,7 @@ def _emit_error(
     output: OutputFormat,
     code: str,
     message: str,
+    exit_code: int = ExitCode.ERROR,
     details: list[dict[str, Any]] | None = None,
 ) -> None:
     error: dict[str, Any] = {"code": code, "message": message}
@@ -58,7 +75,17 @@ def _emit_error(
     payload = {"error": error}
 
     _render_json(payload, output=output)
-    raise typer.Exit(code=1)
+    raise typer.Exit(code=int(exit_code))
+
+
+def _dispatch_error_details(error: DispatchError) -> list[dict[str, Any]] | None:
+    detail: dict[str, Any] = {}
+    if error.dispatch_id is not None:
+        detail["dispatch_id"] = error.dispatch_id
+    if error.status_code is not None:
+        detail["status_code"] = error.status_code
+
+    return [detail] if detail else None
 
 
 @app.command()
@@ -79,18 +106,53 @@ def send(
             output=output,
             code="validation_error",
             message="dispatch request validation failed",
+            exit_code=ExitCode.ERROR,
             details=json.loads(exc.json(include_url=False)),
         )
 
     database = DispatchDB(db_path or _default_db_path())
 
     try:
-        dispatch = database.record_pending(request)
-    except WalkieTalkieViolation as exc:
+        dispatch = dispatch_request_sync(database, request)
+    except DispatchRateLimitError as exc:
         _emit_error(
             output=output,
-            code="walkie_talkie_violation",
+            code=exc.error_code,
             message=str(exc),
+            exit_code=ExitCode.RATE_LIMIT,
+            details=_dispatch_error_details(exc),
+        )
+    except DispatchAuthenticationError as exc:
+        _emit_error(
+            output=output,
+            code=exc.error_code,
+            message=str(exc),
+            exit_code=ExitCode.AUTH,
+            details=_dispatch_error_details(exc),
+        )
+    except DispatchNetworkError as exc:
+        _emit_error(
+            output=output,
+            code=exc.error_code,
+            message=str(exc),
+            exit_code=ExitCode.NETWORK,
+            details=_dispatch_error_details(exc),
+        )
+    except DispatchTimeoutError as exc:
+        _emit_error(
+            output=output,
+            code=exc.error_code,
+            message=str(exc),
+            exit_code=ExitCode.ERROR,
+            details=_dispatch_error_details(exc),
+        )
+    except DispatchError as exc:
+        _emit_error(
+            output=output,
+            code=exc.error_code,
+            message=str(exc),
+            exit_code=ExitCode.ERROR,
+            details=_dispatch_error_details(exc),
         )
 
     _render_json(dispatch.model_dump(mode="json"), output=output)

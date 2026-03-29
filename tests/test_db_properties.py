@@ -50,8 +50,12 @@ def _apply_terminal_state(
     return db.mark_failed(dispatch_id, f"failed-{sequence}")
 
 
-@given(request=REQUEST, terminal_states=st.lists(TERMINAL_STATE, min_size=1, max_size=4))
-def test_terminal_state_transitions_only_once(request: DispatchRequest, terminal_states: list[DispatchState]) -> None:
+@given(
+    request=REQUEST, terminal_states=st.lists(TERMINAL_STATE, min_size=1, max_size=4)
+)
+def test_terminal_state_transitions_only_once(
+    request: DispatchRequest, terminal_states: list[DispatchState]
+) -> None:
     with TemporaryDirectory() as tempdir:
         db = DispatchDB(Path(tempdir) / "state.db")
         dispatch = db.record_pending(request)
@@ -59,7 +63,9 @@ def test_terminal_state_transitions_only_once(request: DispatchRequest, terminal
 
         for sequence, terminal_state in enumerate(terminal_states):
             if sequence == 0:
-                updated = _apply_terminal_state(db, dispatch.id, terminal_state, sequence)
+                updated = _apply_terminal_state(
+                    db, dispatch.id, terminal_state, sequence
+                )
                 assert updated.state is terminal_state
                 continue
 
@@ -117,10 +123,14 @@ def test_walkie_talkie_blocks_concurrent_pending_requests(
         with ThreadPoolExecutor(max_workers=attempts) as executor:
             results = list(executor.map(try_record_pending, range(attempts)))
 
-        accepted = [dispatch_id for status, dispatch_id in results if status == "accepted"]
+        accepted = [
+            dispatch_id for status, dispatch_id in results if status == "accepted"
+        ]
         blocked = [status for status, _ in results if status == "blocked"]
         records = db.list_dispatches(agent_id=request.agent_id)
-        pending = [record for record in records if record.state is DispatchState.PENDING]
+        pending = [
+            record for record in records if record.state is DispatchState.PENDING
+        ]
 
         assert len(accepted) == 1
         assert len(blocked) == attempts - 1
