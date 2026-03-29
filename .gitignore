@@ -11,3 +11,8 @@ wheels/
 
 # Virtual environments
 .venv
+
+# Local config and state
+*.toml.local
+config.local.json
+state.db

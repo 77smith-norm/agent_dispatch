@@ -217,6 +217,10 @@ uv run ty check
 uv run pytest -v
 ```
 
+## Lineage
+
+`agent_dispatch` grew out of [manus_dispatch](https://github.com/77smith-norm/manus_dispatch) — an earlier experiment in the same problem space. `manus_dispatch` established the walkie-talkie constraint and the SQLite-backed state machine. `agent_dispatch` is the cleaner iteration: Pydantic models, typed errors, async dispatch, and a proper CLI contract.
+
 ## License
 
 MIT. See [LICENSE](LICENSE).
