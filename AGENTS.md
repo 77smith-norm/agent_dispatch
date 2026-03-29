@@ -1,7 +1,7 @@
 # AGENTS.md — agent_dispatch
 
 ## What This Is
-An agent-first Python CLI application for dispatching request/response messages to OpenAI-compatible endpoints (specifically Hermes Agent and OpenClaw). It uses SQLite for precise state management, enforcing rate limits, and implementing a "walkie-talkie" protocol (waiting for an agent's response before dispatching the next request to it).
+An agent-first Python CLI application for dispatching request/response messages to any OpenAI-compatible endpoint. It uses SQLite for precise state management, enforcing rate limits, and implementing a "walkie-talkie" protocol (waiting for an agent's response before dispatching the next request to it).
 
 ## Build & Test
 - Run tests: `uv run pytest`
