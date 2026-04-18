@@ -42,6 +42,7 @@ OutputOption = Annotated[
 JsonInputOption = Annotated[str, typer.Option("--json")]
 DbPathOption = Annotated[Path | None, typer.Option("--db-path")]
 TimeoutOption = Annotated[float, typer.Option("--timeout", min=0.0)]
+DispatchIdArgument = Annotated[int, typer.Argument()]
 
 
 def _default_db_path() -> Path:
@@ -86,6 +87,38 @@ def _dispatch_error_details(error: DispatchError) -> list[dict[str, Any]] | None
         detail["status_code"] = error.status_code
 
     return [detail] if detail else None
+
+
+def _validate_dispatch_id(dispatch_id: int, *, output: OutputFormat) -> int:
+    if dispatch_id < 1:
+        _emit_error(
+            output=output,
+            code="invalid_dispatch_id",
+            message="dispatch_id must be a positive integer",
+        )
+
+    return dispatch_id
+
+
+def _dispatch_payload(dispatch: Any) -> dict[str, Any]:
+    return {
+        "dispatch_id": dispatch.id,
+        "agent_id": dispatch.agent_id,
+        "endpoint": str(dispatch.endpoint),
+        "state": dispatch.state.value,
+        "request": dispatch.request.model_dump(mode="json"),
+        "response": dispatch.response,
+        "error": dispatch.error_message,
+        "timestamps": {
+            "created_at": dispatch.created_at.isoformat(),
+            "updated_at": dispatch.updated_at.isoformat(),
+            "completed_at": (
+                dispatch.completed_at.isoformat()
+                if dispatch.completed_at is not None
+                else None
+            ),
+        },
+    }
 
 
 @app.command()
@@ -157,6 +190,27 @@ def send(
         )
 
     _render_json(dispatch.model_dump(mode="json"), output=output)
+
+
+@app.command()
+def follow(
+    dispatch_id: DispatchIdArgument,
+    db_path: DbPathOption = None,
+    output: OutputOption = OutputFormat.JSON,
+) -> None:
+    validated_dispatch_id = _validate_dispatch_id(dispatch_id, output=output)
+    database = DispatchDB(db_path or _default_db_path())
+
+    try:
+        dispatch = database.get_dispatch(validated_dispatch_id)
+    except KeyError:
+        _emit_error(
+            output=output,
+            code="dispatch_not_found",
+            message=f"dispatch {validated_dispatch_id} was not found",
+        )
+
+    _render_json(_dispatch_payload(dispatch), output=output)
 
 
 def main() -> None:

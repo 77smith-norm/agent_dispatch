@@ -57,6 +57,15 @@ def _send_command(db_path: Path, payload: RequestPayload) -> list[str]:
     ]
 
 
+def _follow_command(db_path: Path, dispatch_id: int) -> list[str]:
+    return [
+        "follow",
+        str(dispatch_id),
+        "--db-path",
+        str(db_path),
+    ]
+
+
 def test_schema_outputs_dispatch_request_schema_by_default() -> None:
     result = runner.invoke(app, ["schema"])
 
@@ -263,3 +272,77 @@ def test_send_passes_timeout_option_to_dispatch_request(
 
     assert result.exit_code == 0
     assert observed["timeout"] == 42.5
+
+
+def test_follow_returns_error_for_invalid_dispatch_id(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+
+    result = runner.invoke(app, _follow_command(db_path, 0))
+
+    assert result.exit_code == int(ExitCode.ERROR)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["error"]["code"] == "invalid_dispatch_id"
+
+
+def test_follow_returns_error_when_dispatch_does_not_exist(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    db = DispatchDB(db_path)
+    db.record_pending(DispatchRequest.model_validate(_request_payload()))
+
+    result = runner.invoke(app, _follow_command(db_path, 999))
+
+    assert result.exit_code == int(ExitCode.ERROR)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["error"]["code"] == "dispatch_not_found"
+
+
+def test_follow_returns_pending_dispatch_without_response(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    db = DispatchDB(db_path)
+    dispatch = db.record_pending(DispatchRequest.model_validate(_request_payload()))
+
+    result = runner.invoke(app, _follow_command(db_path, dispatch.id))
+
+    assert result.exit_code == int(ExitCode.SUCCESS)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["dispatch_id"] == dispatch.id
+    assert payload["state"] == DispatchState.PENDING.value
+    assert payload["response"] is None
+    assert payload["error"] is None
+
+
+def test_follow_returns_replied_dispatch_response(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    db = DispatchDB(db_path)
+    dispatch = db.record_pending(DispatchRequest.model_validate(_request_payload()))
+    db.mark_replied(dispatch.id, {"id": "response-1"})
+
+    result = runner.invoke(app, _follow_command(db_path, dispatch.id))
+
+    assert result.exit_code == int(ExitCode.SUCCESS)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["dispatch_id"] == dispatch.id
+    assert payload["state"] == DispatchState.REPLIED.value
+    assert payload["response"] == {"id": "response-1"}
+    assert payload["error"] is None
+
+
+def test_follow_returns_failed_dispatch_error(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+    db = DispatchDB(db_path)
+    dispatch = db.record_pending(DispatchRequest.model_validate(_request_payload()))
+    db.mark_failed(dispatch.id, "request timed out after 42.5s")
+
+    result = runner.invoke(app, _follow_command(db_path, dispatch.id))
+
+    assert result.exit_code == int(ExitCode.SUCCESS)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["dispatch_id"] == dispatch.id
+    assert payload["state"] == DispatchState.FAILED.value
+    assert payload["response"] is None
+    assert payload["error"] == "request timed out after 42.5s"
