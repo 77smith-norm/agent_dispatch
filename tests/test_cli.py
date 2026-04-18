@@ -7,10 +7,15 @@ from typing import Any, TypedDict, cast
 import pytest
 from typer.testing import CliRunner
 
-from agent_dispatch.cli import ExitCode, app
+from agent_dispatch.cli import ExitCode, _dispatch_error_details, app
 from agent_dispatch.db import DispatchDB
 from agent_dispatch.models import DispatchRecord, DispatchRequest, DispatchState
-from agent_dispatch.network import DispatchNetworkError, DispatchRateLimitError
+from agent_dispatch.network import (
+    DispatchAuthenticationError,
+    DispatchError,
+    DispatchNetworkError,
+    DispatchRateLimitError,
+)
 
 
 runner = CliRunner()
@@ -120,6 +125,10 @@ def test_schema_accepts_output_json_flag() -> None:
     payload = cast(dict[str, Any], json.loads(result.stdout))
 
     assert payload["title"] == "DispatchRequest"
+
+
+def test_dispatch_error_details_returns_empty_list_without_metadata() -> None:
+    assert _dispatch_error_details(DispatchError("boom")) == []
 
 
 def test_send_rejects_invalid_dispatch_request_before_touching_db(
@@ -353,6 +362,28 @@ def test_send_builds_request_from_agent_use_flags(
     assert payload["response"] == {"id": "response-1"}
 
 
+def test_send_requires_endpoint_agent_and_message_flags(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+
+    result = runner.invoke(
+        app,
+        [
+            "send",
+            "--endpoint",
+            "http://example.com/v1",
+            "--agent",
+            "agent-1",
+            "--db-path",
+            str(db_path),
+        ],
+    )
+
+    assert result.exit_code == int(ExitCode.ERROR)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["error"]["code"] == "invalid_send_input"
+
+
 def test_send_requires_exactly_one_input_mode(tmp_path: Path) -> None:
     db_path = tmp_path / "state.db"
 
@@ -377,6 +408,39 @@ def test_send_requires_exactly_one_input_mode(tmp_path: Path) -> None:
     payload = cast(dict[str, Any], json.loads(result.stdout))
 
     assert payload["error"]["code"] == "invalid_send_input"
+
+
+def test_send_returns_auth_exit_code(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.db"
+    request = _request_payload()
+
+    def fake_dispatch(
+        database: DispatchDB,
+        dispatch_request: DispatchRequest,
+        *,
+        timeout: float = 120.0,
+    ) -> DispatchRecord:
+        assert timeout == 120.0
+        dispatch = database.record_pending(dispatch_request)
+        database.mark_failed(dispatch.id, "endpoint returned 401: bad key")
+        raise DispatchAuthenticationError(
+            "endpoint returned 401: bad key",
+            dispatch_id=dispatch.id,
+            status_code=401,
+        )
+
+    monkeypatch.setattr("agent_dispatch.cli.dispatch_request_sync", fake_dispatch)
+
+    result = runner.invoke(app, _send_command(db_path, request))
+
+    assert result.exit_code == int(ExitCode.AUTH)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["error"]["code"] == "auth_error"
+    assert payload["error"]["details"] == [{"dispatch_id": 1, "status_code": 401}]
 
 
 def test_follow_returns_error_for_invalid_dispatch_id(tmp_path: Path) -> None:

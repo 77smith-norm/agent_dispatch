@@ -20,9 +20,7 @@ from agent_dispatch.models import (
 from agent_dispatch.network import (
     DispatchAuthenticationError,
     DispatchError,
-    DispatchNetworkError,
     DispatchRateLimitError,
-    DispatchTimeoutError,
     dispatch_request_sync,
 )
 
@@ -81,7 +79,7 @@ def _emit_error(
     details: list[dict[str, Any]] | None = None,
 ) -> NoReturn:
     error: dict[str, Any] = {"code": code, "message": message}
-    if details is not None:
+    if details:
         error["details"] = details
 
     payload = {"error": error}
@@ -94,14 +92,17 @@ def _validation_error_details(error: ValidationError) -> list[dict[str, Any]]:
     return json.loads(error.json(include_url=False))
 
 
-def _dispatch_error_details(error: DispatchError) -> list[dict[str, Any]] | None:
+def _dispatch_error_details(error: DispatchError) -> list[dict[str, Any]]:
     detail: dict[str, Any] = {}
     if error.dispatch_id is not None:
         detail["dispatch_id"] = error.dispatch_id
     if error.status_code is not None:
         detail["status_code"] = error.status_code
 
-    return [detail] if detail else None
+    if not detail:
+        return []
+
+    return [detail]
 
 
 def _validate_dispatch_id(dispatch_id: int, *, output: OutputFormat) -> int:
@@ -116,6 +117,7 @@ def _validate_dispatch_id(dispatch_id: int, *, output: OutputFormat) -> int:
 
 
 def _dispatch_payload(dispatch: DispatchRecord) -> dict[str, Any]:
+    completed_at = _completed_at_value(dispatch)
     return {
         "dispatch_id": dispatch.id,
         "agent_id": dispatch.agent_id,
@@ -127,13 +129,16 @@ def _dispatch_payload(dispatch: DispatchRecord) -> dict[str, Any]:
         "timestamps": {
             "created_at": dispatch.created_at.isoformat(),
             "updated_at": dispatch.updated_at.isoformat(),
-            "completed_at": (
-                dispatch.completed_at.isoformat()
-                if dispatch.completed_at is not None
-                else None
-            ),
+            "completed_at": completed_at,
         },
     }
+
+
+def _completed_at_value(dispatch: DispatchRecord) -> str | None:
+    if dispatch.completed_at is None:
+        return None
+
+    return dispatch.completed_at.isoformat()
 
 
 def _validate_request_or_error(payload: str | dict[str, Any], *, output: OutputFormat) -> DispatchRequest:
@@ -194,12 +199,13 @@ def _build_send_request(
     thread_id: str | None,
     output: OutputFormat,
 ) -> DispatchRequest:
-    has_json_input = json_input is not None
-    has_agent_flags = any(
-        value is not None for value in (endpoint, agent, message, model, thread_id)
-    )
-
-    if has_json_input and has_agent_flags:
+    if json_input is not None and _has_send_flag_input(
+        endpoint=endpoint,
+        agent=agent,
+        message=message,
+        model=model,
+        thread_id=thread_id,
+    ):
         _emit_error(
             output=output,
             code="invalid_send_input",
@@ -209,8 +215,7 @@ def _build_send_request(
             ),
         )
 
-    if has_json_input:
-        assert json_input is not None
+    if json_input is not None:
         return _validate_request_or_error(json_input, output=output)
 
     if endpoint is None or agent is None or message is None:
@@ -220,25 +225,59 @@ def _build_send_request(
             message="provide either --json or all of --endpoint, --agent, and --message",
         )
 
-    message_override = _parse_message_override(message, output=output)
-    request_payload: dict[str, Any] = {
+    return _validate_request_or_error(
+        _build_send_request_payload(
+            endpoint=endpoint,
+            agent=agent,
+            message=message,
+            model=model,
+            thread_id=thread_id,
+            output=output,
+        ),
+        output=output,
+    )
+
+
+def _has_send_flag_input(
+    *,
+    endpoint: str | None,
+    agent: str | None,
+    message: str | None,
+    model: str | None,
+    thread_id: str | None,
+) -> bool:
+    return any(value is not None for value in (endpoint, agent, message, model, thread_id))
+
+
+def _build_send_request_payload(
+    *,
+    endpoint: str,
+    agent: str,
+    message: str,
+    model: str | None,
+    thread_id: str | None,
+    output: OutputFormat,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = {
         "agent_id": agent,
         "endpoint": _normalize_endpoint(endpoint),
         "thread": {
             "id": thread_id or uuid4().hex,
-            "messages": [
-                (
-                    message_override.model_dump(mode="json", exclude_none=True)
-                    if isinstance(message_override, Message)
-                    else {"role": "user", "content": message_override}
-                )
-            ],
+            "messages": [_message_payload(message, output=output)],
         },
     }
     if model is not None:
-        request_payload["model"] = model
+        payload["model"] = model
 
-    return _validate_request_or_error(request_payload, output=output)
+    return payload
+
+
+def _message_payload(message: str, *, output: OutputFormat) -> dict[str, Any]:
+    message_override = _parse_message_override(message, output=output)
+    if isinstance(message_override, Message):
+        return message_override.model_dump(mode="json", exclude_none=True)
+
+    return {"role": "user", "content": message_override}
 
 
 def _get_dispatch_or_error(
@@ -267,45 +306,26 @@ def _dispatch_request_or_error(
     try:
         return dispatch_request_sync(database, request, timeout=timeout)
     except DispatchRateLimitError as exc:
-        _emit_error(
-            output=output,
-            code=exc.error_code,
-            message=str(exc),
-            exit_code=ExitCode.RATE_LIMIT,
-            details=_dispatch_error_details(exc),
-        )
+        _emit_dispatch_error(exc, output=output, exit_code=ExitCode.RATE_LIMIT)
     except DispatchAuthenticationError as exc:
-        _emit_error(
-            output=output,
-            code=exc.error_code,
-            message=str(exc),
-            exit_code=ExitCode.AUTH,
-            details=_dispatch_error_details(exc),
-        )
-    except DispatchNetworkError as exc:
-        _emit_error(
-            output=output,
-            code=exc.error_code,
-            message=str(exc),
-            exit_code=ExitCode.ERROR,
-            details=_dispatch_error_details(exc),
-        )
-    except DispatchTimeoutError as exc:
-        _emit_error(
-            output=output,
-            code=exc.error_code,
-            message=str(exc),
-            exit_code=ExitCode.ERROR,
-            details=_dispatch_error_details(exc),
-        )
+        _emit_dispatch_error(exc, output=output, exit_code=ExitCode.AUTH)
     except DispatchError as exc:
-        _emit_error(
-            output=output,
-            code=exc.error_code,
-            message=str(exc),
-            exit_code=ExitCode.ERROR,
-            details=_dispatch_error_details(exc),
-        )
+        _emit_dispatch_error(exc, output=output, exit_code=ExitCode.ERROR)
+
+
+def _emit_dispatch_error(
+    error: DispatchError,
+    *,
+    output: OutputFormat,
+    exit_code: ExitCode,
+) -> NoReturn:
+    _emit_error(
+        output=output,
+        code=error.error_code,
+        message=str(error),
+        exit_code=exit_code,
+        details=_dispatch_error_details(error),
+    )
 
 
 def _build_retry_request(
