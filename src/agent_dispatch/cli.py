@@ -4,7 +4,7 @@ import json
 import os
 from enum import IntEnum, StrEnum
 from pathlib import Path
-from typing import Annotated, Any
+from typing import Annotated, Any, NoReturn
 
 import typer
 from pydantic import ValidationError
@@ -69,7 +69,7 @@ def _emit_error(
     message: str,
     exit_code: int = ExitCode.ERROR,
     details: list[dict[str, Any]] | None = None,
-) -> None:
+) -> NoReturn:
     error: dict[str, Any] = {"code": code, "message": message}
     if details is not None:
         error["details"] = details
