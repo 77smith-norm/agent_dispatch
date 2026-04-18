@@ -5,12 +5,18 @@ import os
 from enum import IntEnum, StrEnum
 from pathlib import Path
 from typing import Annotated, Any, NoReturn
+from uuid import uuid4
 
 import typer
 from pydantic import ValidationError
 
 from agent_dispatch.db import DispatchDB
-from agent_dispatch.models import DispatchRecord, DispatchRequest, DispatchState
+from agent_dispatch.models import (
+    DispatchRecord,
+    DispatchRequest,
+    DispatchState,
+    Message,
+)
 from agent_dispatch.network import (
     DispatchAuthenticationError,
     DispatchError,
@@ -39,11 +45,15 @@ OutputOption = Annotated[
     OutputFormat,
     typer.Option("--output", case_sensitive=False),
 ]
-JsonInputOption = Annotated[str, typer.Option("--json")]
+JsonInputOption = Annotated[str | None, typer.Option("--json")]
 DbPathOption = Annotated[Path | None, typer.Option("--db-path")]
 TimeoutOption = Annotated[float, typer.Option("--timeout", min=0.0)]
 DispatchIdArgument = Annotated[int, typer.Argument()]
 MessageOption = Annotated[str | None, typer.Option("--message")]
+EndpointOption = Annotated[str | None, typer.Option("--endpoint")]
+AgentOption = Annotated[str | None, typer.Option("--agent")]
+ModelOption = Annotated[str | None, typer.Option("--model")]
+ThreadIdOption = Annotated[str | None, typer.Option("--thread-id")]
 
 
 def _default_db_path() -> Path:
@@ -78,6 +88,10 @@ def _emit_error(
 
     _render_json(payload, output=output)
     raise typer.Exit(code=int(exit_code))
+
+
+def _validation_error_details(error: ValidationError) -> list[dict[str, Any]]:
+    return json.loads(error.json(include_url=False))
 
 
 def _dispatch_error_details(error: DispatchError) -> list[dict[str, Any]] | None:
@@ -120,6 +134,111 @@ def _dispatch_payload(dispatch: DispatchRecord) -> dict[str, Any]:
             ),
         },
     }
+
+
+def _validate_request_or_error(payload: str | dict[str, Any], *, output: OutputFormat) -> DispatchRequest:
+    try:
+        if isinstance(payload, str):
+            return DispatchRequest.model_validate_json(payload)
+        return DispatchRequest.model_validate(payload)
+    except ValidationError as exc:
+        _emit_error(
+            output=output,
+            code="validation_error",
+            message="dispatch request validation failed",
+            exit_code=ExitCode.ERROR,
+            details=_validation_error_details(exc),
+        )
+
+
+def _normalize_endpoint(endpoint: str) -> str:
+    normalized = endpoint.rstrip("/")
+    if normalized.endswith("/chat/completions"):
+        return normalized
+
+    return f"{normalized}/chat/completions"
+
+
+def _parse_message_override(
+    message: str,
+    *,
+    output: OutputFormat,
+) -> Message | str:
+    try:
+        payload = json.loads(message)
+    except json.JSONDecodeError:
+        return message
+
+    if not isinstance(payload, dict):
+        return message
+
+    try:
+        return Message.model_validate(payload)
+    except ValidationError as exc:
+        _emit_error(
+            output=output,
+            code="validation_error",
+            message="message validation failed",
+            exit_code=ExitCode.ERROR,
+            details=_validation_error_details(exc),
+        )
+
+
+def _build_send_request(
+    *,
+    json_input: str | None,
+    endpoint: str | None,
+    agent: str | None,
+    message: str | None,
+    model: str | None,
+    thread_id: str | None,
+    output: OutputFormat,
+) -> DispatchRequest:
+    has_json_input = json_input is not None
+    has_agent_flags = any(
+        value is not None for value in (endpoint, agent, message, model, thread_id)
+    )
+
+    if has_json_input and has_agent_flags:
+        _emit_error(
+            output=output,
+            code="invalid_send_input",
+            message=(
+                "provide either --json or the --endpoint/--agent/--message flags, "
+                "but not both"
+            ),
+        )
+
+    if has_json_input:
+        assert json_input is not None
+        return _validate_request_or_error(json_input, output=output)
+
+    if endpoint is None or agent is None or message is None:
+        _emit_error(
+            output=output,
+            code="invalid_send_input",
+            message="provide either --json or all of --endpoint, --agent, and --message",
+        )
+
+    message_override = _parse_message_override(message, output=output)
+    request_payload: dict[str, Any] = {
+        "agent_id": agent,
+        "endpoint": _normalize_endpoint(endpoint),
+        "thread": {
+            "id": thread_id or uuid4().hex,
+            "messages": [
+                (
+                    message_override.model_dump(mode="json", exclude_none=True)
+                    if isinstance(message_override, Message)
+                    else {"role": "user", "content": message_override}
+                )
+            ],
+        },
+    }
+    if model is not None:
+        request_payload["model"] = model
+
+    return _validate_request_or_error(request_payload, output=output)
 
 
 def _get_dispatch_or_error(
@@ -193,13 +312,21 @@ def _build_retry_request(
     original_request: DispatchRequest,
     *,
     message: str | None,
+    output: OutputFormat,
 ) -> DispatchRequest:
     if message is None:
         return original_request
 
     payload = original_request.model_dump(mode="json")
-    payload["thread"]["messages"][-1]["content"] = message
-    return DispatchRequest.model_validate(payload)
+    message_override = _parse_message_override(message, output=output)
+    if isinstance(message_override, Message):
+        payload["thread"]["messages"][-1] = message_override.model_dump(
+            mode="json",
+            exclude_none=True,
+        )
+    else:
+        payload["thread"]["messages"][-1]["content"] = message_override
+    return _validate_request_or_error(payload, output=output)
 
 
 @app.command()
@@ -209,21 +336,25 @@ def schema(output: OutputOption = OutputFormat.JSON) -> None:
 
 @app.command()
 def send(
-    json_input: JsonInputOption,
+    json_input: JsonInputOption = None,
+    endpoint: EndpointOption = None,
+    agent: AgentOption = None,
+    message: MessageOption = None,
+    model: ModelOption = None,
+    thread_id: ThreadIdOption = None,
     db_path: DbPathOption = None,
     timeout: TimeoutOption = 120.0,
     output: OutputOption = OutputFormat.JSON,
 ) -> None:
-    try:
-        request = DispatchRequest.model_validate_json(json_input)
-    except ValidationError as exc:
-        _emit_error(
-            output=output,
-            code="validation_error",
-            message="dispatch request validation failed",
-            exit_code=ExitCode.ERROR,
-            details=json.loads(exc.json(include_url=False)),
-        )
+    request = _build_send_request(
+        json_input=json_input,
+        endpoint=endpoint,
+        agent=agent,
+        message=message,
+        model=model,
+        thread_id=thread_id,
+        output=output,
+    )
 
     database = DispatchDB(db_path or _default_db_path())
     dispatch = _dispatch_request_or_error(
@@ -233,7 +364,7 @@ def send(
         timeout=timeout,
     )
 
-    _render_json(dispatch.model_dump(mode="json"), output=output)
+    _render_json(_dispatch_payload(dispatch), output=output)
 
 
 @app.command()
@@ -278,7 +409,11 @@ def retry(
             ),
         )
 
-    request = _build_retry_request(original_dispatch.request, message=message)
+    request = _build_retry_request(
+        original_dispatch.request,
+        message=message,
+        output=output,
+    )
     dispatch = _dispatch_request_or_error(
         database,
         request,
