@@ -10,7 +10,7 @@ import typer
 from pydantic import ValidationError
 
 from agent_dispatch.db import DispatchDB
-from agent_dispatch.models import DispatchRequest
+from agent_dispatch.models import DispatchRecord, DispatchRequest, DispatchState
 from agent_dispatch.network import (
     DispatchAuthenticationError,
     DispatchError,
@@ -43,6 +43,7 @@ JsonInputOption = Annotated[str, typer.Option("--json")]
 DbPathOption = Annotated[Path | None, typer.Option("--db-path")]
 TimeoutOption = Annotated[float, typer.Option("--timeout", min=0.0)]
 DispatchIdArgument = Annotated[int, typer.Argument()]
+MessageOption = Annotated[str | None, typer.Option("--message")]
 
 
 def _default_db_path() -> Path:
@@ -100,7 +101,7 @@ def _validate_dispatch_id(dispatch_id: int, *, output: OutputFormat) -> int:
     return dispatch_id
 
 
-def _dispatch_payload(dispatch: Any) -> dict[str, Any]:
+def _dispatch_payload(dispatch: DispatchRecord) -> dict[str, Any]:
     return {
         "dispatch_id": dispatch.id,
         "agent_id": dispatch.agent_id,
@@ -121,33 +122,31 @@ def _dispatch_payload(dispatch: Any) -> dict[str, Any]:
     }
 
 
-@app.command()
-def schema(output: OutputOption = OutputFormat.JSON) -> None:
-    _render_json(DispatchRequest.model_json_schema(), output=output)
-
-
-@app.command()
-def send(
-    json_input: JsonInputOption,
-    db_path: DbPathOption = None,
-    timeout: TimeoutOption = 120.0,
-    output: OutputOption = OutputFormat.JSON,
-) -> None:
+def _get_dispatch_or_error(
+    database: DispatchDB,
+    dispatch_id: int,
+    *,
+    output: OutputFormat,
+) -> DispatchRecord:
     try:
-        request = DispatchRequest.model_validate_json(json_input)
-    except ValidationError as exc:
+        return database.get_dispatch(dispatch_id)
+    except KeyError:
         _emit_error(
             output=output,
-            code="validation_error",
-            message="dispatch request validation failed",
-            exit_code=ExitCode.ERROR,
-            details=json.loads(exc.json(include_url=False)),
+            code="dispatch_not_found",
+            message=f"dispatch {dispatch_id} was not found",
         )
 
-    database = DispatchDB(db_path or _default_db_path())
 
+def _dispatch_request_or_error(
+    database: DispatchDB,
+    request: DispatchRequest,
+    *,
+    output: OutputFormat,
+    timeout: float = 120.0,
+) -> DispatchRecord:
     try:
-        dispatch = dispatch_request_sync(database, request, timeout=timeout)
+        return dispatch_request_sync(database, request, timeout=timeout)
     except DispatchRateLimitError as exc:
         _emit_error(
             output=output,
@@ -189,6 +188,51 @@ def send(
             details=_dispatch_error_details(exc),
         )
 
+
+def _build_retry_request(
+    original_request: DispatchRequest,
+    *,
+    message: str | None,
+) -> DispatchRequest:
+    if message is None:
+        return original_request
+
+    payload = original_request.model_dump(mode="json")
+    payload["thread"]["messages"][-1]["content"] = message
+    return DispatchRequest.model_validate(payload)
+
+
+@app.command()
+def schema(output: OutputOption = OutputFormat.JSON) -> None:
+    _render_json(DispatchRequest.model_json_schema(), output=output)
+
+
+@app.command()
+def send(
+    json_input: JsonInputOption,
+    db_path: DbPathOption = None,
+    timeout: TimeoutOption = 120.0,
+    output: OutputOption = OutputFormat.JSON,
+) -> None:
+    try:
+        request = DispatchRequest.model_validate_json(json_input)
+    except ValidationError as exc:
+        _emit_error(
+            output=output,
+            code="validation_error",
+            message="dispatch request validation failed",
+            exit_code=ExitCode.ERROR,
+            details=json.loads(exc.json(include_url=False)),
+        )
+
+    database = DispatchDB(db_path or _default_db_path())
+    dispatch = _dispatch_request_or_error(
+        database,
+        request,
+        output=output,
+        timeout=timeout,
+    )
+
     _render_json(dispatch.model_dump(mode="json"), output=output)
 
 
@@ -200,15 +244,46 @@ def follow(
 ) -> None:
     validated_dispatch_id = _validate_dispatch_id(dispatch_id, output=output)
     database = DispatchDB(db_path or _default_db_path())
+    dispatch = _get_dispatch_or_error(
+        database,
+        validated_dispatch_id,
+        output=output,
+    )
 
-    try:
-        dispatch = database.get_dispatch(validated_dispatch_id)
-    except KeyError:
+    _render_json(_dispatch_payload(dispatch), output=output)
+
+
+@app.command()
+def retry(
+    dispatch_id: DispatchIdArgument,
+    message: MessageOption = None,
+    db_path: DbPathOption = None,
+    output: OutputOption = OutputFormat.JSON,
+) -> None:
+    validated_dispatch_id = _validate_dispatch_id(dispatch_id, output=output)
+    database = DispatchDB(db_path or _default_db_path())
+    original_dispatch = _get_dispatch_or_error(
+        database,
+        validated_dispatch_id,
+        output=output,
+    )
+
+    if original_dispatch.state is not DispatchState.FAILED:
         _emit_error(
             output=output,
-            code="dispatch_not_found",
-            message=f"dispatch {validated_dispatch_id} was not found",
+            code="dispatch_not_retryable",
+            message=(
+                f"dispatch {validated_dispatch_id} cannot be retried from state "
+                f"{original_dispatch.state.value}"
+            ),
         )
+
+    request = _build_retry_request(original_dispatch.request, message=message)
+    dispatch = _dispatch_request_or_error(
+        database,
+        request,
+        output=output,
+    )
 
     _render_json(_dispatch_payload(dispatch), output=output)
 

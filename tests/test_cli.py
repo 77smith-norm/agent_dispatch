@@ -66,6 +66,24 @@ def _follow_command(db_path: Path, dispatch_id: int) -> list[str]:
     ]
 
 
+def _retry_command(
+    db_path: Path,
+    dispatch_id: int,
+    *,
+    message: str | None = None,
+) -> list[str]:
+    command = [
+        "retry",
+        str(dispatch_id),
+        "--db-path",
+        str(db_path),
+    ]
+    if message is not None:
+        command.extend(["--message", message])
+
+    return command
+
+
 def test_schema_outputs_dispatch_request_schema_by_default() -> None:
     result = runner.invoke(app, ["schema"])
 
@@ -346,3 +364,126 @@ def test_follow_returns_failed_dispatch_error(tmp_path: Path) -> None:
     assert payload["state"] == DispatchState.FAILED.value
     assert payload["response"] is None
     assert payload["error"] == "request timed out after 42.5s"
+
+
+def test_retry_returns_error_for_invalid_dispatch_id(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+
+    result = runner.invoke(app, _retry_command(db_path, 0))
+
+    assert result.exit_code == int(ExitCode.ERROR)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["error"]["code"] == "invalid_dispatch_id"
+
+
+def test_retry_returns_error_when_dispatch_does_not_exist(tmp_path: Path) -> None:
+    db_path = tmp_path / "state.db"
+
+    result = runner.invoke(app, _retry_command(db_path, 999))
+
+    assert result.exit_code == int(ExitCode.ERROR)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["error"]["code"] == "dispatch_not_found"
+
+
+def test_retry_rejects_non_retryable_dispatch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.db"
+    db = DispatchDB(db_path)
+    dispatch = db.record_pending(DispatchRequest.model_validate(_request_payload()))
+    db.mark_replied(dispatch.id, {"id": "response-1"})
+
+    def fake_dispatch(
+        database: DispatchDB,
+        dispatch_request: DispatchRequest,
+        *,
+        timeout: float = 120.0,
+    ) -> DispatchRecord:
+        raise AssertionError("retry should not dispatch non-retryable records")
+
+    monkeypatch.setattr("agent_dispatch.cli.dispatch_request_sync", fake_dispatch)
+
+    result = runner.invoke(app, _retry_command(db_path, dispatch.id))
+
+    assert result.exit_code == int(ExitCode.ERROR)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["error"]["code"] == "dispatch_not_retryable"
+
+
+def test_retry_creates_new_dispatch_from_failed_record(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.db"
+    db = DispatchDB(db_path)
+    request = DispatchRequest.model_validate(_request_payload())
+    original = db.record_pending(request)
+    db.mark_failed(original.id, "request timed out after 42.5s")
+
+    def fake_dispatch(
+        database: DispatchDB,
+        dispatch_request: DispatchRequest,
+        *,
+        timeout: float = 120.0,
+    ) -> DispatchRecord:
+        assert timeout == 120.0
+        assert dispatch_request == request
+        dispatch = database.record_pending(dispatch_request)
+        return database.mark_replied(dispatch.id, {"id": "response-2"})
+
+    monkeypatch.setattr("agent_dispatch.cli.dispatch_request_sync", fake_dispatch)
+
+    result = runner.invoke(app, _retry_command(db_path, original.id))
+
+    assert result.exit_code == int(ExitCode.SUCCESS)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["dispatch_id"] == 2
+    assert payload["agent_id"] == request.agent_id
+    assert payload["endpoint"] == str(request.endpoint)
+    assert payload["state"] == DispatchState.REPLIED.value
+    assert payload["response"] == {"id": "response-2"}
+
+    records = db.list_dispatches(agent_id=request.agent_id)
+    assert [record.id for record in records] == [1, 2]
+    assert records[1].state is DispatchState.REPLIED
+
+
+def test_retry_allows_overriding_message_content(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    db_path = tmp_path / "state.db"
+    db = DispatchDB(db_path)
+    request = DispatchRequest.model_validate(_request_payload())
+    original = db.record_pending(request)
+    db.mark_failed(original.id, "endpoint returned 500: boom")
+
+    def fake_dispatch(
+        database: DispatchDB,
+        dispatch_request: DispatchRequest,
+        *,
+        timeout: float = 120.0,
+    ) -> DispatchRecord:
+        assert timeout == 120.0
+        assert dispatch_request.thread.messages[-1].content == "retry this instead"
+        dispatch = database.record_pending(dispatch_request)
+        return database.mark_replied(dispatch.id, {"id": "response-3"})
+
+    monkeypatch.setattr("agent_dispatch.cli.dispatch_request_sync", fake_dispatch)
+
+    result = runner.invoke(
+        app,
+        _retry_command(db_path, original.id, message="retry this instead"),
+    )
+
+    assert result.exit_code == int(ExitCode.SUCCESS)
+    payload = cast(dict[str, Any], json.loads(result.stdout))
+
+    assert payload["dispatch_id"] == 2
+    assert payload["request"]["thread"]["messages"][-1]["content"] == "retry this instead"
