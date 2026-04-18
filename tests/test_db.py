@@ -60,6 +60,21 @@ def test_mark_replied_is_not_idempotent(tmp_path: Path) -> None:
     )
 
 
+def test_get_dispatch_round_trips_replied_payload_and_completed_at(
+    tmp_path: Path,
+) -> None:
+    db = DispatchDB(tmp_path / "state.db")
+    dispatch = db.record_pending(_request())
+    db.mark_replied(dispatch.id, {"id": "response-1", "status": "ok"})
+
+    stored = db.get_dispatch(dispatch.id)
+
+    assert stored.state is DispatchState.REPLIED
+    assert stored.response == {"id": "response-1", "status": "ok"}
+    assert stored.error_message is None
+    assert stored.completed_at is not None
+
+
 def test_mark_failed_is_not_idempotent(tmp_path: Path) -> None:
     db = DispatchDB(tmp_path / "state.db")
     dispatch = db.record_pending(_request())

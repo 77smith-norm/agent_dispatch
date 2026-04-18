@@ -39,46 +39,13 @@ class DispatchDB:
         request_json = json.dumps(request.model_dump(mode="json"), sort_keys=True)
 
         def operation(connection: sqlite3.Connection) -> int:
-            if self._has_pending(connection, request.agent_id):
-                raise self._walkie_talkie_error(request.agent_id)
-
-            try:
-                cursor = connection.execute(
-                    """
-                    INSERT INTO dispatches (
-                        request_id,
-                        agent_id,
-                        endpoint,
-                        thread_id,
-                        request_json,
-                        state,
-                        created_at,
-                        updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        request_id,
-                        request.agent_id,
-                        str(request.endpoint),
-                        request.thread.id,
-                        request_json,
-                        DispatchState.PENDING.value,
-                        created_at,
-                        created_at,
-                    ),
-                )
-            except sqlite3.IntegrityError as exc:
-                if "one_pending_per_agent" in str(exc):
-                    raise self._walkie_talkie_error(request.agent_id) from exc
-
-                raise
-
-            dispatch_id = cursor.lastrowid
-            if dispatch_id is None:
-                raise RuntimeError("sqlite insert did not return a dispatch id")
-
-            return dispatch_id
+            return self._insert_pending_dispatch(
+                connection,
+                request=request,
+                request_id=request_id,
+                request_json=request_json,
+                created_at=created_at,
+            )
 
         dispatch_id = self._write(operation)
         return self.get_dispatch(dispatch_id)
@@ -248,6 +215,52 @@ class DispatchDB:
             connection.commit()
             return result
 
+    def _insert_pending_dispatch(
+        self,
+        connection: sqlite3.Connection,
+        *,
+        request: DispatchRequest,
+        request_id: str,
+        request_json: str,
+        created_at: str,
+    ) -> int:
+        if self._has_pending(connection, request.agent_id):
+            raise self._walkie_talkie_error(request.agent_id)
+
+        try:
+            cursor = connection.execute(
+                """
+                INSERT INTO dispatches (
+                    request_id,
+                    agent_id,
+                    endpoint,
+                    thread_id,
+                    request_json,
+                    state,
+                    created_at,
+                    updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    request_id,
+                    request.agent_id,
+                    str(request.endpoint),
+                    request.thread.id,
+                    request_json,
+                    DispatchState.PENDING.value,
+                    created_at,
+                    created_at,
+                ),
+            )
+        except sqlite3.IntegrityError as exc:
+            if "one_pending_per_agent" in str(exc):
+                raise self._walkie_talkie_error(request.agent_id) from exc
+
+            raise
+
+        return int(cursor.lastrowid)
+
     def _ensure_transition(
         self,
         rowcount: int,
@@ -269,23 +282,18 @@ class DispatchDB:
         )
 
     def _row_to_dispatch(self, row: sqlite3.Row) -> DispatchRecord:
-        request = DispatchRequest.model_validate(json.loads(row["request_json"]))
-        response = None
-        if row["response_json"] is not None:
-            response = json.loads(row["response_json"])
-
         return DispatchRecord(
             id=row["id"],
             request_id=row["request_id"],
             agent_id=row["agent_id"],
             endpoint=row["endpoint"],
             thread_id=row["thread_id"],
-            request=request,
+            request=_parse_request_json(row["request_json"]),
             state=DispatchState(row["state"]),
             created_at=datetime.fromisoformat(row["created_at"]),
             updated_at=datetime.fromisoformat(row["updated_at"]),
             completed_at=_parse_optional_datetime(row["completed_at"]),
-            response=response,
+            response=_parse_optional_json(row["response_json"]),
             error_message=row["error_message"],
         )
 
@@ -304,3 +312,14 @@ def _parse_optional_datetime(value: str | None) -> datetime | None:
         return None
 
     return datetime.fromisoformat(value)
+
+
+def _parse_request_json(value: str) -> DispatchRequest:
+    return DispatchRequest.model_validate(json.loads(value))
+
+
+def _parse_optional_json(value: str | None) -> Any | None:
+    if value is None:
+        return None
+
+    return json.loads(value)
