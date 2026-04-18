@@ -62,10 +62,12 @@ async def record_pending_when_ready(
         try:
             return await asyncio.to_thread(database.record_pending, request)
         except WalkieTalkieViolation as exc:
-            if deadline is not None and monotonic() >= deadline:
-                raise DispatchTimeoutError(
-                    f"timed out waiting for agent {request.agent_id!r} to clear its pending dispatch"
-                ) from exc
+            _raise_wait_timeout_if_needed(
+                agent_id=request.agent_id,
+                deadline=deadline,
+                monotonic=monotonic,
+                cause=exc,
+            )
 
         await sleep(poll_interval)
 
@@ -90,63 +92,24 @@ async def dispatch_request(
     http_client = client or httpx.AsyncClient(timeout=timeout)
 
     try:
-        try:
-            response = await http_client.post(str(request.endpoint), json=payload)
-        except httpx.TimeoutException as exc:
-            message = f"request timed out after {timeout}s"
-            await asyncio.to_thread(database.mark_failed, dispatch.id, message)
-            raise DispatchTimeoutError(
-                message,
-                dispatch_id=dispatch.id,
-            ) from exc
-        except httpx.TransportError as exc:
-            message = f"connection error: {exc}"
-            await asyncio.to_thread(database.mark_failed, dispatch.id, message)
-            raise DispatchNetworkError(
-                message,
-                dispatch_id=dispatch.id,
-            ) from exc
-
-        if response.status_code == 429:
-            message = _response_error_message(response)
-            await asyncio.to_thread(database.mark_failed, dispatch.id, message)
-            raise DispatchRateLimitError(
-                message,
-                dispatch_id=dispatch.id,
-                status_code=response.status_code,
-            )
-
-        if response.status_code in {401, 403}:
-            message = _response_error_message(response)
-            await asyncio.to_thread(database.mark_failed, dispatch.id, message)
-            raise DispatchAuthenticationError(
-                message,
-                dispatch_id=dispatch.id,
-                status_code=response.status_code,
-            )
-
-        if response.is_error:
-            message = _response_error_message(response)
-            await asyncio.to_thread(database.mark_failed, dispatch.id, message)
-            raise DispatchNetworkError(
-                message,
-                dispatch_id=dispatch.id,
-                status_code=response.status_code,
-            )
-
-        try:
-            response_payload = response.json()
-        except ValueError as exc:
-            message = (
-                f"endpoint returned invalid JSON with status {response.status_code}"
-            )
-            await asyncio.to_thread(database.mark_failed, dispatch.id, message)
-            raise DispatchNetworkError(
-                message,
-                dispatch_id=dispatch.id,
-                status_code=response.status_code,
-            ) from exc
-
+        response = await _post_response_or_error(
+            http_client,
+            database=database,
+            request=request,
+            payload=payload,
+            dispatch_id=dispatch.id,
+            timeout=timeout,
+        )
+        await _raise_for_error_response(
+            database,
+            dispatch_id=dispatch.id,
+            response=response,
+        )
+        response_payload = await _response_payload_or_error(
+            database,
+            dispatch_id=dispatch.id,
+            response=response,
+        )
         return await asyncio.to_thread(
             database.mark_replied, dispatch.id, response_payload
         )
@@ -187,6 +150,112 @@ def build_request_payload(request: DispatchRequest) -> dict[str, Any]:
         payload["metadata"] = request.metadata
 
     return payload
+
+
+def _raise_wait_timeout_if_needed(
+    *,
+    agent_id: str,
+    deadline: float | None,
+    monotonic: Callable[[], float],
+    cause: WalkieTalkieViolation,
+) -> None:
+    if deadline is None:
+        return
+    if monotonic() < deadline:
+        return
+
+    raise DispatchTimeoutError(
+        f"timed out waiting for agent {agent_id!r} to clear its pending dispatch"
+    ) from cause
+
+
+async def _post_response_or_error(
+    client: httpx.AsyncClient,
+    *,
+    database: DispatchDB,
+    request: DispatchRequest,
+    payload: dict[str, Any],
+    dispatch_id: int,
+    timeout: float,
+) -> httpx.Response:
+    try:
+        return await client.post(str(request.endpoint), json=payload)
+    except httpx.TimeoutException as exc:
+        message = f"request timed out after {timeout}s"
+        await _mark_failed(database, dispatch_id, message)
+        raise DispatchTimeoutError(message, dispatch_id=dispatch_id) from exc
+    except httpx.TransportError as exc:
+        message = f"connection error: {exc}"
+        await _mark_failed(database, dispatch_id, message)
+        raise DispatchNetworkError(message, dispatch_id=dispatch_id) from exc
+
+
+async def _raise_for_error_response(
+    database: DispatchDB,
+    *,
+    dispatch_id: int,
+    response: httpx.Response,
+) -> None:
+    error = _response_dispatch_error(response, dispatch_id=dispatch_id)
+    if error is None:
+        return
+
+    await _mark_failed(database, dispatch_id, str(error))
+    raise error
+
+
+def _response_dispatch_error(
+    response: httpx.Response,
+    *,
+    dispatch_id: int,
+) -> DispatchError | None:
+    message = _response_error_message(response)
+    if response.status_code == 429:
+        return DispatchRateLimitError(
+            message,
+            dispatch_id=dispatch_id,
+            status_code=response.status_code,
+        )
+    if response.status_code in {401, 403}:
+        return DispatchAuthenticationError(
+            message,
+            dispatch_id=dispatch_id,
+            status_code=response.status_code,
+        )
+    if not response.is_error:
+        return None
+
+    return DispatchNetworkError(
+        message,
+        dispatch_id=dispatch_id,
+        status_code=response.status_code,
+    )
+
+
+async def _response_payload_or_error(
+    database: DispatchDB,
+    *,
+    dispatch_id: int,
+    response: httpx.Response,
+) -> Any:
+    try:
+        return response.json()
+    except ValueError as exc:
+        message = f"endpoint returned invalid JSON with status {response.status_code}"
+        await _mark_failed(database, dispatch_id, message)
+        raise DispatchNetworkError(
+            message,
+            dispatch_id=dispatch_id,
+            status_code=response.status_code,
+        ) from exc
+
+
+async def _mark_failed(
+    database: DispatchDB,
+    dispatch_id: int,
+    message: str,
+) -> DispatchRecord:
+    return await asyncio.to_thread(database.mark_failed, dispatch_id, message)
 
 
 def _response_error_message(response: httpx.Response) -> str:
