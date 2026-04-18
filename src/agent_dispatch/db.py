@@ -4,7 +4,7 @@ import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any, Callable, cast
 from uuid import uuid4
 
 from agent_dispatch.models import DispatchRecord, DispatchRequest, DispatchState
@@ -259,7 +259,7 @@ class DispatchDB:
 
             raise
 
-        return int(cursor.lastrowid)
+        return cast(int, cursor.lastrowid)
 
     def _ensure_transition(
         self,
